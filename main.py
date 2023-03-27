@@ -1,48 +1,43 @@
 import configparser
-import openai
-import cmd
 import yaml
-from requests.exceptions import ProxyError
+import openai
 import time
+import json
+import os
+
+from prompt_toolkit import prompt
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.lexers import PygmentsLexer
+from pygments.styles import get_style_by_name
+from pygments.lexers.python import Python3Lexer
+from pygments.token import Token
 
 
-class ChatShell(cmd.Cmd):
-    intro = 'Welcome to the ChatShell. Type help or ? to list commands.\n'
-    prompt = 'ChatShell > '
+# 全局配置信息
+config = configparser.ConfigParser()
+config.read('config.ini')
+api_key = config.get('OpenAI', 'API_SECRET_KEY')
+ai_mode = config.get('OpenAI', 'MODEL')
 
-    def __init__(self, config_file):
-        super(ChatShell, self).__init__()
-        self.config = configparser.ConfigParser()
-        self.config.read(config_file)
-        self.api_key = self.config.get('OpenAI', 'API_SECRET_KEY')
-        openai.api_key = self.api_key
-        self.prompts_venv_file = "easy-chat.yaml"
+
+class OpenAIClient(object):
+
+    def __init__(self):
+        super(OpenAIClient, self).__init__()
+        openai.api_key = api_key
         self.max_retry = 5
         self.retry_delay = 5
         self.timeout = 10
 
-    def do_ask(self, line):
-        templates = []
-        with open(self.prompts_venv_file) as f:
-            prom_venv = yaml.load(f, Loader=yaml.FullLoader)
-        
-        name = prom_venv[0]['name']
-        print("name: ", name)
-        description = prom_venv[1]['description']
-        print("description: ", description)
-
-        pre_prompt = prom_venv[2]['pre_prompt']
-        response = self.make_request(content=pre_prompt)
-
-        self.parser_response(response)
-
     def make_request(self, content):
-        print("content: ", content)
+        print("request content: ", content)
         retry_count = 0
         while retry_count < self.max_retry:
             try:
                 response = openai.ChatCompletion.create(
-                    model=self.config.get('OpenAI', 'MODEL'),
+                    model=ai_mode,
                     messages=[{"role": "system", "content": content}],
                     max_tokens=1024,
                     n=1,
@@ -51,24 +46,145 @@ class ChatShell(cmd.Cmd):
                     timeout=self.timeout
                 )
                 return response
-            except ProxyError as e:
-                print(f"Failed to connect to proxy, retrying in {self.retry_delay} seconds ({retry_count+1}/{self.max_retry})")
-                time.sleep(self.retry_delay)
-                retry_count += 1
             except Exception as e:
-                print(f"Failed to connect to API server, retrying in {self.retry_delay} seconds ({retry_count+1}/{self.max_retry})")
+                print(f"Failed to connect to API server, detail error as {e}, retrying in {self.retry_delay} seconds ({retry_count+1}/{self.max_retry})")
                 time.sleep(self.retry_delay)
                 retry_count += 1
-
         print("Failed to complete request")
-        return ""
 
     def parser_response(self, response):
         content = response.choices[0]['message']['content']
         print(content)
 
-    def do_quit(self, line):
-        return True
+
+class PromptsVirtualenv(object):
+
+    def __init__(self):
+        self.venv_json = "prompts_venv.json"
+        self.openai_cli = OpenAIClient()
+
+    def list_venvs_info(self, _):
+        with open(self.venv_json, "r") as f:
+            data = json.load(f)
+        print("venvs_info: ", data)
+
+    def get_venv_info(self, argv):
+        name = argv[1]
+        with open(self.venv_json, "r") as f:
+            data = json.load(f)
+        if name in data.keys():
+            print(data[name])
+        else:
+            print(f"venv [{name}] not found.")
+
+    def add_venv(self, argv):
+        name = argv[1]
+        file_path = argv[2]
+        if os.path.exists(file_path):
+            with open(self.venv_json, "r") as f:
+                data = json.load(f)
+            data[name] = file_path
+
+            with open(self.venv_json, "w") as f:
+                json.dump(data, f)
+        else:
+            print(f"YAML file [{file_path}] not found.")
+
+    def delete_venv(self, argv):
+        name = argv[1]
+        with open(self.venv_json, "r") as f:
+            data = json.load(f)
+
+        if name in data.keys():
+            data.pop(name)
+            with open(self.venv_json, "w") as f:
+                json.dump(data, f)
+        else:
+            print(f"venv [{name}] not found.")
+
+
+    def enter_venv(self, argv):
+        name = argv[1]
+        with open(self.venv_json, "r") as f:
+            data = json.load(f)
+        if name in data.keys():
+            file_path = data[name]
+
+            with open(file_path) as f:
+                venv_yaml = yaml.load(f, Loader=yaml.FullLoader)
+
+            resp = self.openai_cli.make_request(venv_yaml[2]['pre_prompt'])
+            self.openai_cli.parser_response(resp)
+        else:
+            print(f"venv [{name}] not found.")
+
+    def ask_chatgpt(self, prompt):
+        resp = self.openai_cli.make_request(prompt)
+        self.openai_cli.parser_response(resp)
+
+
+class ChatShell(object):
+
+    def __init__(self):
+
+        self.proms_venv = PromptsVirtualenv()
+
+        # REPL keywords and functions mapping.
+        self.keywords = {
+            'list_venvs': self.proms_venv.list_venvs_info,
+            'get_venv': self.proms_venv.get_venv_info,
+            'add_venv': self.proms_venv.add_venv,
+            'del_venv': self.proms_venv.delete_venv,
+            'enter_venv': self.proms_venv.enter_venv,
+        }
+
+    
+    def loop(self):
+        completer = WordCompleter(self.keywords.keys())
+        history = FileHistory('.history')
+    
+        while True:
+            input = prompt(
+                'My Python REPL > ', 
+                lexer=PygmentsLexer(Python3Lexer), 
+                completer=completer, 
+                history=history, 
+                auto_suggest=AutoSuggestFromHistory())
+
+            argv = input.split()
+
+            # Call ChatGPT
+            if argv[0] == 'ask':
+                self.proms_venv.ask_chatgpt(input)
+                continue
+
+            # Normal output
+            if argv[0] not in self.keywords:
+                print(f'You entered: {input}')
+                continue
+        
+            # Virtualenv process
+            self.keywords[argv[0]](argv)
+
+
+def main():
+    shell = ChatShell()
+    shell.loop()
+
 
 if __name__ == '__main__':
-    ChatShell('config.ini').cmdloop()
+    main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
