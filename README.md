@@ -20,3 +20,9 @@
     3. new_prompts（学习到的提示语）
 5. **用户可以查看或切换到一个已经存在的 Prompt-venv**：Prompt-venvs 在使用的过程中会不断学习新的 Prompts，以此来变得更聪明。
 6. **Prompt-venv yamls 应该可以互相 include**：利用 ChatGPT 的多模态，融合复杂的交叉场景。
+
+## TODO
+
+1. 增加输入输出格式规范。自动添加 markdown 输出格式（固定句式）到每个 prompt。
+2. 显示历史记录编号，将历史记录添加到 new_prompts。
+3. 初始状态下是 CLI 模式。进入 Prompts 后是 Chat 模式。
